@@ -26,8 +26,8 @@ env:
     ENV_SH: scripts/environment.sh # 环境初始化脚本路径（可选）
     REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10 # 源码仓库：padavanonly 的 24.10 mt798x 专用版（推荐，闭源驱动）
     REPO_BRANCH: openwrt-24.10-6.6 # 分支：openwrt-24.10 + 内核 6.6
-    PLATFORM_FILE: configs/ax6000.config # 设备配置文件路径（我们稍后创建，只针对 AX6000-ubootmod）
-    CONFIG_FILE: configs/packages-ax6000.config # 自定义包配置文件路径（我们稍后创建，添加常用插件如 LuCI、Passwall）
+    PLATFORM_FILE: configs/ax6000/ax6000.config # 设备配置文件路径（我们稍后创建，只针对 AX6000-ubootmod）
+    CONFIG_FILE: configs/ax6000/packages-ax6000.config # 自定义包配置文件路径（我们稍后创建，添加常用插件如 LuCI、Passwall）
     SETTINGS_SH: scripts/init-settings.sh # 自定义设置脚本路径，修改默认登录IP（可选，如果你有）
     PACKAGES_SH: scripts/packages.sh # 包安装脚本路径（可选）
     CLASH_CORE_SH: scripts/preset-clash-core-arm64-L.sh # Clash 核心脚本路径（可选，如果需要 OpenClash）

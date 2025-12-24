@@ -3,69 +3,214 @@ name: build-multi-filogic
 permissions: write-all
 
 on:
-  workflow_dispatch:    # 手动触发
-  schedule:
-    - cron: 0 20 * * 3   # 每周自动
+    workflow_dispatch: # 手动触发
+    schedule:
+        - cron: 0 20 * * 3 # 每周自动
 
 env:
-  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
-  REPO_BRANCH: openwrt-24.10-6.6
-  COMMON_BASE: common/base.config      # 公共基础配置
-  COMMON_PACKAGES: common/packages.config # 所有设备共享的基础配置
-  TZ: Asia/Shanghai
-  UPLOAD_RELEASE: true
+    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
+    REPO_BRANCH: openwrt-24.10-6.6
+    COMMON_BASE: common/base.config # 公共基础配置
+    COMMON_PACKAGES: common/packages.config # 所有设备共享的基础配置
+    TZ: Asia/Shanghai
+    UPLOAD_RELEASE: true
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        device: [ax6000, gl-mt6000, cmcc-rax3000m, qihoo-360t7]  # 这里列出你要构建的设备文件夹名，加新设备直接加这里
-      fail-fast: false  # 一个设备失败不影响其他
+    build:
+        runs-on: ubuntu-24.04
+        strategy:
+            matrix:
+                device: [ax6000] # 这里列出你要构建的设备文件夹名，加新设备直接加这里
+            fail-fast: false # 一个设备失败不影响其他
 
-    steps:
-    - name: Checkout
-      uses: actions/checkout@main
+        steps:
+            - name: Checkout
+              uses: actions/checkout@main
 
-    - name: 初始化环境
-      # （同你之前 workflow 的初始化部分，省略...）
+            - name: 初始化环境
+              env:
+                  DEBIAN_FRONTEND: noninteractive # 非交互模式，避免 apt 提示
+              run: |
+                  # 运行清理磁盘脚本（如果存在）
+                  chmod +x $FREE_DISK_SH && $FREE_DISK_SH
+                  # 更新 apt 并升级系统
+                  sudo -E apt-get -qq update -y
+                  sudo -E apt-get -qq full-upgrade -y
+                  # 运行环境脚本（如果存在）
+                  chmod +x $ENV_SH && $ENV_SH
+                  # 清理不必要的目录以节省空间
+                  sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+                  sudo timedatectl set-timezone "$TZ"
+                  # 清理 Docker 镜像和容器
+                  docker image prune -a -f
+                  docker container prune -f
+                  # 创建工作目录
+                  sudo mkdir -p /workdir
+                  sudo chown $USER:$GROUPS /workdir
+            - name: 检查空间使用情况1 # 步骤：显示磁盘使用（调试用）
+              if: (!cancelled())
+              run: df -hT
+            - name: 克隆源码
+              working-directory: /workdir
+              run: |
+                  # 克隆指定分支的源码（--depth 1 只克隆最新提交，节省时间）
+                  git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
+                  # 创建符号链接到 GitHub 工作区
+                  ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: 克隆源码
-      # （同之前）
+            - name: 设置 VERSION 环境变量 # 步骤：提取版本号
+              run: echo "VERSION=${REPO_BRANCH#*-}" >> $GITHUB_ENV
 
-    - name: 安装 feeds
-      # （同之前）
+            - name: 安装 feeds
+              run: |
+                  cd openwrt
+                  ./scripts/feeds update -a  # 更新所有 feeds
+                  ./scripts/feeds install -a  # 安装所有 feeds
 
-    - name: 应用配置（公共 + 当前设备）
-      run: |
-        cd openwrt
-        # 应用公共基础
-        cat ../$COMMON_BASE >> .config
-        cat ../$COMMON_PACKAGES >> .config
-        # 应用设备专属
-        cat ../devices/${{ matrix.device }}/device.config >> .config
-        # 如果设备有自定义包，覆盖或追加
-        [ -f ../devices/${{ matrix.device }}/packages.config ] && cat ../devices/${{ matrix.device }}/packages.config >> .config
-        # 复制公共 files
-        [ -d ../common/files ] && cp -r ../common/files .
-        # 复制设备 files（覆盖公共）
-        [ -d ../devices/${{ matrix.device }}/files ] && cp -r ../devices/${{ matrix.device }}/files .
-        make defconfig
+            - name: 应用配置（公共 + 当前设备）
+              run: |
+                  cd openwrt
+                  # 应用公共基础
+                  cat ../$COMMON_BASE >> .config
+                  cat ../$COMMON_PACKAGES >> .config
+                  # 应用设备专属
+                  cat ../devices/${{ matrix.device }}/device.config >> .config
+                  # 如果设备有自定义包，覆盖或追加
+                  [ -f ../devices/${{ matrix.device }}/packages.config ] && cat ../devices/${{ matrix.device }}/packages.config >> .config
+                  # 复制公共 files
+                  [ -d ../common/files ] && cp -r ../common/files .
+                  # 复制设备 files（覆盖公共）
+                  [ -d ../devices/${{ matrix.device }}/files ] && cp -r ../devices/${{ matrix.device }}/files .
+                  make defconfig
 
-    - name: 下载 & 编译
-      # （同你之前 workflow 的下载、编译工具链、内核、插件、固件部分）
+            - name: 导入补丁和配置 & 执行脚本 # 步骤：应用配置和脚本
+              run: |
+                  # 如果有 files 目录，复制到 openwrt（自定义文件，如 rootfs）
+                  [ -d files ] && mv files openwrt/files || echo "files not found"
+                  # 追加设备配置（ax6000.config）
+                  [ -f $PLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
+                  # 追加包配置（packages.config）
+                  [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
+                  cd openwrt
+                  # 运行自定义设置脚本（如果存在）
+                  chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
+                  # 运行包脚本（如果存在）
+                  chmod +x $GITHUB_WORKSPACE/$PACKAGES_SH && $GITHUB_WORKSPACE/$PACKAGES_SH
+                  # 运行 Clash 核心脚本（如果存在）
+                  chmod +x $GITHUB_WORKSPACE/$CLASH_CORE_SH && $GITHUB_WORKSPACE/$CLASH_CORE_SH
+            - name: 空间使用情况2 # 调试：磁盘使用
+              if: (!cancelled())
+              run: df -hT
+            - name: 编译工具链 # 步骤：编译工具链
+              id: mtools
+              run: |
+                  cd openwrt
+                  make defconfig
+                  echo -e "$(($(nproc)+1)) thread compile"  # 使用 CPU 核数 +1 线程
+                  make tools/compile -j$(($(nproc)+1)) || make tools/compile -j1 V=s  # 先多线程，失败则单线程
+                  make toolchain/compile -j$(($(nproc)+1)) || make toolchain/compile -j1 V=s
+                  echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 整理并上传 Release（按设备）
-      if: success()
-      run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages *.buildinfo *.json *.manifest
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+            - name: 空间使用情况3_1 # 调试
+              if: (!cancelled())
+              run: df -hT
 
-        # 生成设备专属 Release 描述
-        echo -e "🎉 ${{ matrix.device }} 固件\n✅ ImmortalWrt 24.10-6.6\n默认 IP: 192.168.6.1" > release.txt
+            - name: 清除工具链编译中间产物... # 步骤：清理空间
+              if: steps.mtools.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt
+                  rm -rf dl/*  # 清理下载
+                  rm -rf build_dir/toolchain-*  # 清理工具链中间文件
 
-        RELEASE_TAG=$(date +"%Y%m%d")_${{ matrix.device }}
-        gh release create $RELEASE_TAG --title "${{ matrix.device }} 固件" --notes-file release.txt $FIRMWARE/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - name: 空间使用情况3_2 # 调试
+              if: (!cancelled())
+              run: df -hT
+
+            - name: 编译内核 # 步骤：编译内核
+              id: mkernel
+              if: steps.mtools.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt
+                  echo -e "$(($(nproc)+1)) thread compile"
+                  make target/linux/compile -j$(($(nproc)+1)) || make target/linux/compile -j1 V=s
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 空间使用情况4 # 调试
+              if: (!cancelled())
+              run: df -hT
+
+            - name: 编译插件 # 步骤：编译包
+              id: mpackage
+              if: steps.mkernel.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt
+                  echo -e "$(($(nproc)+1)) thread compile"
+                  make package/compile -j$(($(nproc)+1)) || make package/compile -j1 V=s
+                  make package/install -j$(nproc) || make package/install -j1 V=s
+                  make package/index  # 生成包索引
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 空间使用情况5 # 调试
+              if: (!cancelled())
+              run: df -hT
+
+            - name: 清除插件编译文件 # 步骤：清理包中间文件
+              id: cpackage
+              if: steps.mpackage.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt
+                  rm -rf build_dir/target-*/host  # 清理主机工具
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 空间使用情况6 # 调试
+              if: (!cancelled())
+              run: df -hT
+
+            - name: 编译固件 # 步骤：编译最终固件
+              id: compile
+              if: steps.cpackage.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt
+                  echo -e "$(($(nproc)+1)) thread compile"
+                  make target/install -j$(nproc) || make target/install -j1 V=s
+                  make json_overview_image_info  # 生成镜像信息
+                  make checksum  # 生成校验和
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 空间使用情况7 # 调试
+              if: (!cancelled())
+              run: df -hT
+
+            - name: 上传 bin 目录 # 步骤：上传 artifact（如果启用）
+              uses: actions/upload-artifact@main
+              if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+              with:
+                  name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+                  path: openwrt/bin
+
+            - name: 整理文件 # 步骤：清理输出目录，只保留固件
+              id: organize
+              if: steps.compile.outputs.status == 'success' && !cancelled()
+              run: |
+                  cd openwrt/bin/targets/*/*
+                  # 移除不必要的文件
+                  rm -rf *.buildinfo
+                  rm -rf *.json
+                  rm -rf *.manifest
+                  rm -rf packages
+                  echo "FIRMWARE=$PWD" >> $GITHUB_ENV  # 设置固件路径环境变量
+                  echo "status=success" >> $GITHUB_OUTPUT
+            - name: 整理并上传 Release（按设备）
+              if: success()
+              run: |
+                  cd openwrt/bin/targets/*/*
+                  rm -rf packages *.buildinfo *.json *.manifest
+                  echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+
+                  # 生成设备专属 Release 描述
+                  echo -e "🎉 ${{ matrix.device }} 固件\n✅ ImmortalWrt 24.10-6.6\n默认 IP: 192.168.6.1" > release.txt
+
+                  RELEASE_TAG=$(date +"%Y%m%d")_${{ matrix.device }}
+                  gh release create $RELEASE_TAG --title "${{ matrix.device }} 固件" --notes-file release.txt $FIRMWARE/*
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
