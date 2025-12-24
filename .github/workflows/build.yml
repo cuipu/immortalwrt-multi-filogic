@@ -1,0 +1,71 @@
+name: build-multi-filogic
+
+permissions: write-all
+
+on:
+  workflow_dispatch:    # 手动触发
+  schedule:
+    - cron: 0 20 * * 3   # 每周自动
+
+env:
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
+  REPO_BRANCH: openwrt-24.10-6.6
+  COMMON_BASE: common/base.config      # 公共基础配置
+  COMMON_PACKAGES: common/packages.config # 所有设备共享的基础配置
+  TZ: Asia/Shanghai
+  UPLOAD_RELEASE: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        device: [ax6000, gl-mt6000, cmcc-rax3000m, qihoo-360t7]  # 这里列出你要构建的设备文件夹名，加新设备直接加这里
+      fail-fast: false  # 一个设备失败不影响其他
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: 初始化环境
+      # （同你之前 workflow 的初始化部分，省略...）
+
+    - name: 克隆源码
+      # （同之前）
+
+    - name: 安装 feeds
+      # （同之前）
+
+    - name: 应用配置（公共 + 当前设备）
+      run: |
+        cd openwrt
+        # 应用公共基础
+        cat ../$COMMON_BASE >> .config
+        cat ../$COMMON_PACKAGES >> .config
+        # 应用设备专属
+        cat ../devices/${{ matrix.device }}/device.config >> .config
+        # 如果设备有自定义包，覆盖或追加
+        [ -f ../devices/${{ matrix.device }}/packages.config ] && cat ../devices/${{ matrix.device }}/packages.config >> .config
+        # 复制公共 files
+        [ -d ../common/files ] && cp -r ../common/files .
+        # 复制设备 files（覆盖公共）
+        [ -d ../devices/${{ matrix.device }}/files ] && cp -r ../devices/${{ matrix.device }}/files .
+        make defconfig
+
+    - name: 下载 & 编译
+      # （同你之前 workflow 的下载、编译工具链、内核、插件、固件部分）
+
+    - name: 整理并上传 Release（按设备）
+      if: success()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages *.buildinfo *.json *.manifest
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+
+        # 生成设备专属 Release 描述
+        echo -e "🎉 ${{ matrix.device }} 固件\n✅ ImmortalWrt 24.10-6.6\n默认 IP: 192.168.6.1" > release.txt
+
+        RELEASE_TAG=$(date +"%Y%m%d")_${{ matrix.device }}
+        gh release create $RELEASE_TAG --title "${{ matrix.device }} 固件" --notes-file release.txt $FIRMWARE/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
