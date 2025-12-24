@@ -7,7 +7,7 @@ ImmortalWrt 24.10 多设备云编译仓库（Filogic/MT798x 平台）  使用 Gi
 
 - 修改默认登录地址在/scripts/init-settings.sh
   - 默认登录地址为192.168.2.1
-  - root
+  - 账号为 root
   - 密码为空
 ## 默认集成插件
 
