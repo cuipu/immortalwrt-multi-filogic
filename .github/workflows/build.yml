@@ -1,33 +1,50 @@
-name: build-multi-filogic
+# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
+#
+# 这个 workflow 专门为 Redmi AX6000-ubootmod 构建 ImmortalWrt 24.10 版本。
+# 它会克隆 padavanonly 的 mt798x-24.10 源码（包含闭源 MTK 驱动）。
+# 输出：固件文件上传到 GitHub Release，便于下载。
+# 运行触发：手动（workflow_dispatch）或定时（每周三）。
 
-permissions: write-all
+name: build-ax6000 # workflow 名称
+
+permissions: write-all # 允许上传到 Release
 
 on:
-    workflow_dispatch: # 手动触发
+    repository_dispatch: # 支持远程触发
+    workflow_dispatch: # 支持手动触发（在 Actions 页面点击 Run workflow）
     schedule:
-        - cron: 0 20 * * 3 # 每周自动
+        - cron: 0 20 * * 3 # 每周四 04:00 北京时间（UTC+8）自动运行一次
 
 env:
-    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
-    REPO_BRANCH: openwrt-24.10-6.6
-    COMMON_BASE: common/base.config # 公共基础配置
-    COMMON_PACKAGES: common/packages.config # 所有设备共享的基础配置
-    TZ: Asia/Shanghai
-    UPLOAD_RELEASE: true
+    FREE_DISK_SH: scripts/free_disk_space.sh # 清理磁盘脚本路径（可选，如果你有这个脚本）
+    ENV_SH: scripts/environment.sh # 环境初始化脚本路径（可选）
+    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6 # 源码仓库：padavanonly 的 24.10 mt798x 专用版（推荐，闭源驱动）
+    REPO_BRANCH: openwrt-24.10-6.6 # 分支：openwrt-24.10 + 内核 6.6
+    PLATFORM_FILE: configs/ax6000/ax6000.config # 设备配置文件路径（我们稍后创建，只针对 AX6000-ubootmod）
+    CONFIG_FILE: configs/ax6000/packages-ax6000.config # 自定义包配置文件路径（我们稍后创建，添加常用插件如 LuCI、Passwall）
+    SETTINGS_SH: scripts/init-settings.sh # 自定义设置脚本路径，修改默认登录IP（可选，如果你有）
+    PACKAGES_SH: scripts/packages.sh # 包安装脚本路径（可选）
+    CLASH_CORE_SH: scripts/preset-clash-core-arm64-L.sh # Clash 核心脚本路径（可选，如果需要 OpenClash）
+    UPLOAD_BIN_DIR: false # 是否上传整个 bin 目录：false（不上传，只上传固件）
+    UPLOAD_FIRMWARE: false # 是否上传 artifact：false（直接用 Release）
+    UPLOAD_RELEASE: true # 是否上传到 GitHub Release：true（推荐，方便下载）
+    TZ: Asia/Shanghai # 时区：中国上海
 
 jobs:
     build:
-        runs-on: ubuntu-24.04
-        strategy:
-            matrix:
-                device: [ax6000] # 这里列出你要构建的设备文件夹名，加新设备直接加这里
-            fail-fast: false # 一个设备失败不影响其他
+        runs-on: ubuntu-24.04 # 使用 Ubuntu 24.04 环境（最新，支持更快构建）
 
         steps:
-            - name: Checkout
+            - name: 检查 # 步骤：检出仓库代码
               uses: actions/checkout@main
 
-            - name: 初始化环境
+            - name: 初始化环境 # 步骤：设置环境，清理空间，安装依赖
               env:
                   DEBIAN_FRONTEND: noninteractive # 非交互模式，避免 apt 提示
               run: |
@@ -47,10 +64,12 @@ jobs:
                   # 创建工作目录
                   sudo mkdir -p /workdir
                   sudo chown $USER:$GROUPS /workdir
+
             - name: 检查空间使用情况1 # 步骤：显示磁盘使用（调试用）
               if: (!cancelled())
               run: df -hT
-            - name: 克隆源码
+
+            - name: 克隆源码 # 步骤：克隆 ImmortalWrt 源码
               working-directory: /workdir
               run: |
                   # 克隆指定分支的源码（--depth 1 只克隆最新提交，节省时间）
@@ -61,27 +80,18 @@ jobs:
             - name: 设置 VERSION 环境变量 # 步骤：提取版本号
               run: echo "VERSION=${REPO_BRANCH#*-}" >> $GITHUB_ENV
 
-            - name: 安装 feeds
+            - name: 开启缓存 # 步骤：启用缓存，加速后续构建（ccache 等）
+              uses: klever1988/cachewrtbuild@main
+              with:
+                  ccache: "true" # 启用 ccache 缓存
+                  mixkey: "${{ env.VERSION }}-ax6000" # 缓存键：版本 + 设备
+                  prefix: ${{ github.workspace }}/openwrt # 缓存路径
+
+            - name: 安装 feeds # 步骤：更新和安装 feeds（软件源）
               run: |
                   cd openwrt
                   ./scripts/feeds update -a  # 更新所有 feeds
                   ./scripts/feeds install -a  # 安装所有 feeds
-
-            - name: 应用配置（公共 + 当前设备）
-              run: |
-                  cd openwrt
-                  # 应用公共基础
-                  cat ../$COMMON_BASE >> .config
-                  cat ../$COMMON_PACKAGES >> .config
-                  # 应用设备专属
-                  cat ../devices/${{ matrix.device }}/device.config >> .config
-                  # 如果设备有自定义包，覆盖或追加
-                  [ -f ../devices/${{ matrix.device }}/packages.config ] && cat ../devices/${{ matrix.device }}/packages.config >> .config
-                  # 复制公共 files
-                  [ -d ../common/files ] && cp -r ../common/files .
-                  # 复制设备 files（覆盖公共）
-                  [ -d ../devices/${{ matrix.device }}/files ] && cp -r ../devices/${{ matrix.device }}/files .
-                  make defconfig
 
             - name: 导入补丁和配置 & 执行脚本 # 步骤：应用配置和脚本
               run: |
@@ -98,9 +108,20 @@ jobs:
                   chmod +x $GITHUB_WORKSPACE/$PACKAGES_SH && $GITHUB_WORKSPACE/$PACKAGES_SH
                   # 运行 Clash 核心脚本（如果存在）
                   chmod +x $GITHUB_WORKSPACE/$CLASH_CORE_SH && $GITHUB_WORKSPACE/$CLASH_CORE_SH
+
+            - name: 下载文件 # 步骤：生成 defconfig 并下载依赖
+              run: |
+                  cd openwrt
+                  make defconfig  # 扩展 .config
+                  make download -j8 V=10  # 下载包源（-j8 多线程）
+                  # 清理小文件（小于 1KB 的下载失败文件）
+                  find dl -size -1024c -exec ls -l {} \;
+                  find dl -size -1024c -exec rm -f {} \;
+
             - name: 空间使用情况2 # 调试：磁盘使用
               if: (!cancelled())
               run: df -hT
+
             - name: 编译工具链 # 步骤：编译工具链
               id: mtools
               run: |
@@ -200,17 +221,48 @@ jobs:
                   rm -rf packages
                   echo "FIRMWARE=$PWD" >> $GITHUB_ENV  # 设置固件路径环境变量
                   echo "status=success" >> $GITHUB_OUTPUT
-            - name: 整理并上传 Release（按设备）
-              if: success()
+
+            - name: 上传固件目录 # 步骤：上传 artifact（如果启用）
+              uses: actions/upload-artifact@main
+              if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+              with:
+                  name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+                  path: ${{ env.FIRMWARE }}
+
+            - name: 生成发布标签 # 步骤：创建 Release 标签和描述
+              id: tag
+              if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
               run: |
-                  cd openwrt/bin/targets/*/*
-                  rm -rf packages *.buildinfo *.json *.manifest
-                  echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+                  VERSION1="${REPO_BRANCH#*-}"  # 提取版本
+                  # 创建 Release 描述文本
+                  echo -e "🎉 Redmi AX6000-ubootmod 固件\n✅ ImmortalWrt ${VERSION1} 源码\n❗️ 默认 IP: 192.168.6.1\n❗️ 包含不死 U-Boot 支持" >> release.txt
+                  # 生成标签：日期 + 版本
+                  echo "release_tag=$(date +"%Y.%m.%d-${VERSION1}_ax6000")" >> $GITHUB_OUTPUT
+                  echo "status=success" >> $GITHUB_OUTPUT
 
-                  # 生成设备专属 Release 描述
-                  echo -e "🎉 ${{ matrix.device }} 固件\n✅ ImmortalWrt 24.10-6.6\n默认 IP: 192.168.6.1" > release.txt
+            - name: 上传固件到发布 # 步骤：上传固件到 GitHub Release
+              uses: softprops/action-gh-release@v2.0.4
+              if: steps.tag.outputs.status == 'success' && !cancelled()
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GitHub 令牌
+              with:
+                  tag_name: ${{ steps.tag.outputs.release_tag }} # 标签名
+                  body_path: release.txt # 描述文件
+                  files: ${{ env.FIRMWARE }}/* # 上传所有固件文件（.itb, .ubi 等）
 
-                  RELEASE_TAG=$(date +"%Y%m%d")_${{ matrix.device }}
-                  gh release create $RELEASE_TAG --title "${{ matrix.device }} 固件" --notes-file release.txt $FIRMWARE/*
+            - name: 删除以前发布的固件 # 步骤：清理旧 Release（保留最近 15 个）
+              uses: dev-drprasad/delete-older-releases@v0.3.3
+              if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
+              with:
+                  keep_latest: 15 # 保留最近 15 个 Release
+                  delete_tags: true # 删除标签
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: 删除以前的工作流程 # 步骤：清理旧 Actions 运行记录（保留最近 3 个，1 天内）
+              uses: Mattraks/delete-workflow-runs@v2
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  repository: ${{ github.repository }}
+                  retain_days: 1 # 保留 1 天
+                  keep_minimum_runs: 3 # 至少保留 3 个
