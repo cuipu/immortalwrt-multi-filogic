@@ -19,113 +19,74 @@ env:
     TZ: Asia/Shanghai # 时区
 
 jobs:
-    build:
-        runs-on: ubuntu-22.04 # 建议使用 22.04，对旧插件编译器的兼容性比 24.04 更稳
+  build:
+    runs-on: ubuntu-24.04  # Use latest Ubuntu for compatibility with ImmortalWrt build tools
 
-        steps:
-            - name: 检出项目代码
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4  # Checks out this repo to access custom configs and scripts
 
-            - name: 初始化环境
-              env:
-                  DEBIAN_FRONTEND: noninteractive
-              run: |
-                  # 清理磁盘空间并安装编译依赖 (针对 Ubuntu 系统优化)
-                  sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-                  sudo -E apt-get -qq update
-                  sudo -E apt-get -qq install $(curl -fsSL is.gd)
-                  sudo -E apt-get -qq autoremove --purge
-                  sudo -E apt-get -qq clean
-                  sudo timedatectl set-timezone "$TZ"
-                  sudo mkdir -p /workdir
-                  sudo chown $USER:$GROUPS /workdir
+      - name: Install build dependencies
+        run: |
+          # Update package list and install required tools for OpenWrt/ImmortalWrt compilation.
+          # These are standard dependencies for building from source.
+          sudo apt update -y
+          sudo apt full-upgrade -y
+          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext-base gettext \
+            git gperf haveged help2man intltool libc-dev libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+            libssl-dev libtool lrzsz mkisofs msmtp ninja-build patch pkgconf python3 python3-pyelftools \
+            python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglify-js \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo apt autoremove --purge -y
+          sudo apt clean -y
 
-            - name: 克隆源码
-              working-directory: /workdir
-              run: |
-                  # --depth 1 浅克隆，显著加快 Actions 运行速度
-                  git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
-                  ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: Clone ImmortalWrt source code
+        run: |
+          # Clone the ImmortalWrt repository at version 24.10.4 (latest stable as of Dec 2025).
+          # This ensures the build is on version 24+ as required.
+          git clone https://github.com/immortalwrt/immortalwrt.git -b v24.10.4 openwrt
+          cd openwrt
+          git rev-parse HEAD  # Log commit hash for reproducibility
 
-            - name: 更新并安装 Feeds
-              run: |
-                  cd openwrt
-                  ./scripts/feeds update -a
-                  ./scripts/feeds install -a
+      - name: Update and install feeds
+        working-directory: openwrt
+        run: |
+          # Update package feeds and install them. This pulls in all necessary packages, including those for PPPoE.
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-            - name: 导入自定义配置与脚本
-              run: |
-                  # 1. 复制 files 目录 (如果存在) 到编译根目录
-                  [ -d files ] && mv files openwrt/files || echo "files 目录未找到"
-                  # 2. 合并设备基础配置和插件配置到 .config
-                  [ -f $PLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
-                  [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
-                  # 3. 运行初始化脚本 (如修改 IP 地址: 192.168.6.1)
-                  cd openwrt
-                  [ -f $GITHUB_WORKSPACE/$SETTINGS_SH ] && chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
-                  # 4. 特殊处理：针对 Linux 6.6 内核，通过 defconfig 自动修正依赖
-                  make defconfig
+      - name: Apply configuration
+        working-directory: openwrt
+        run: |
+          # Copy base config (common settings for all builds).
+          cp ../common/base.config .config
+          # Append device-specific config for AX6000 (target selection, kernel tweaks).
+          cat ../common/config/ax6000/ax6000.config >> .config
+          # Append package-specific config for AX6000 (necessary and recommended plugins).
+          cat ../common/config/ax6000/packages-ax6000.config >> .config
+          # Expand the config to full defconfig for building.
+          make defconfig
 
-            - name: 下载依赖包 (Download)
-              id: package
-              run: |
-                  cd openwrt
-                  # 使用 V=s 可以记录具体哪个包下载失败
-                  make download -j8 V=s
-                  # 清理下载失败产生的 1KB 以下的小文件
-                  find dl -size -1024c -exec rm -f {} \;
+      - name: Download dependencies
+        working-directory: openwrt
+        run: |
+          # Download all source packages in parallel for faster build.
+          make download -j$(nproc)
+          # Clean up any failed downloads.
+          find dl -size -1024c -exec rm -f {} \;
 
-            - name: 自动化完整编译 (核心步骤)
-              id: compile
-              run: |
-                  cd openwrt
-                  echo -e "$(nproc) 线程开始编译..."
-                  # 策略：直接执行全编译。Makefile 会自动处理 tools -> toolchain -> target 依赖。
-                  # 若多线程失败 (Error 2)，则切换为单线程并输出详细日志 (V=s) 方便排查。
-                  make -j$(nproc) || make -j1 V=s
-                  echo "status=success" >> $GITHUB_OUTPUT
-                  echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+      - name: Compile firmware
+        working-directory: openwrt
+        run: |
+          # Build the firmware with verbose output for debugging.
+          # Uses all CPU cores for speed.
+          make -j$(nproc) V=s
 
-            - name: 检查空间占用
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 整理并筛选固件
-              id: organize
-              if: steps.compile.outputs.status == 'success' && !cancelled()
-              run: |
-                  # 进入固件生成目录 (MT7986 平台)
-                  cd openwrt/bin/targets/mediatek/filogic/
-                  # 移除编译中间产物和校验文件，只保留刷机固件
-                  rm -rf packages *.buildinfo *.json *.manifest
-                  echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 生成 Release 标签与描述
-              id: tag
-              if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
-              run: |
-                  echo "release_tag=$(date +"%Y.%m.%d")-AX6000" >> $GITHUB_OUTPUT
-                  touch release.txt
-                  echo "🚀 Redmi AX6000 自定义固件" >> release.txt
-                  echo "📂 源码仓库: $REPO_URL" >> release.txt
-                  echo "📌 默认 IP: 192.168.6.1 (需脚本支持)" >> release.txt
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 发布固件到 GitHub Release
-              uses: softprops/action-gh-release@v2
-              if: steps.tag.outputs.status == 'success' && !cancelled()
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              with:
-                  tag_name: ${{ steps.tag.outputs.release_tag }}
-                  body_path: release.txt
-                  files: ${{ env.FIRMWARE }}/*
-
-            - name: 清理旧的工作流运行记录
-              uses: Mattraks/delete-workflow-runs@v2
-              with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  repository: ${{ github.repository }}
-                  retain_days: 1
-                  keep_minimum_runs: 3
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-ax6000-firmware
+          path: openwrt/bin/targets/mediatek/filogic/*
+          retention-days: 7  # Keep artifacts for 7 days
