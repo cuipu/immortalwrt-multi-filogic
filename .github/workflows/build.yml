@@ -1,268 +1,97 @@
-# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
-#
-# This is free software, licensed under the MIT License.
-# See /LICENSE for more information.
-#
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
-#
-# 这个 workflow 专门为 Redmi AX6000-ubootmod 构建 ImmortalWrt 24.10 版本。
-# 它会克隆 padavanonly 的 mt798x-24.10 源码（包含闭源 MTK 驱动）。
-# 输出：固件文件上传到 GitHub Release，便于下载。
-# 运行触发：手动（workflow_dispatch）或定时（每周三）。
+name: build-ax6000-immortalwrt
 
-name: build-ax6000 # workflow 名称
-
-permissions: write-all # 允许上传到 Release
+permissions: write-all # 开启 Release 写入权限
 
 on:
-    repository_dispatch: # 支持远程触发
-    workflow_dispatch: # 支持手动触发（在 Actions 页面点击 Run workflow）
+    repository_dispatch:
+    workflow_dispatch: # 支持手动点击运行
     schedule:
-        - cron: 0 20 * * 3 # 每周四 04:00 北京时间（UTC+8）自动运行一次
+        - cron: 0 20 * * 3 # 每周四凌晨 04:00 (北京时间) 自动运行
 
 env:
-    FREE_DISK_SH: scripts/free_disk_space.sh # 清理磁盘脚本路径（可选，如果你有这个脚本）
-    ENV_SH: scripts/environment.sh # 环境初始化脚本路径（可选）
-    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6 # 源码仓库：padavanonly 的 24.10 mt798x 专用版（推荐，闭源驱动）
-    REPO_BRANCH: openwrt-24.10-6.6 # 分支：openwrt-24.10 + 内核 6.6
-    PLATFORM_FILE: configs/ax6000/ax6000.config # 设备配置文件路径（我们稍后创建，只针对 AX6000-ubootmod）
-    CONFIG_FILE: configs/ax6000/packages-ax6000.config # 自定义包配置文件路径（我们稍后创建，添加常用插件如 LuCI、Passwall）
-    SETTINGS_SH: scripts/init-settings.sh # 自定义设置脚本路径，修改默认登录IP（可选，如果你有）
-    PACKAGES_SH: scripts/packages.sh # 包安装脚本路径（可选）
-    CLASH_CORE_SH: scripts/preset-clash-core-arm64-L.sh # Clash 核心脚本路径（可选，如果需要 OpenClash）
-    UPLOAD_BIN_DIR: false # 是否上传整个 bin 目录：false（不上传，只上传固件）
-    UPLOAD_FIRMWARE: false # 是否上传 artifact：false（直接用 Release）
-    UPLOAD_RELEASE: true # 是否上传到 GitHub Release：true（推荐，方便下载）
-    TZ: Asia/Shanghai # 时区：中国上海
+    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6 # padavanonly 专为 mt798x 优化的 6.6 内核仓库
+    REPO_BRANCH: openwrt-24.10-6.6 # 源码分支
+    PLATFORM_FILE: configs/ax6000/ax6000.config # 存放设备基础配置 (Target/Subtarget)
+    CONFIG_FILE: configs/ax6000/packages-ax6000.config # 存放插件配置 (LuCI apps)
+    FEEDS_CONF: feeds.conf.default # feeds 配置文件
+    SETTINGS_SH: scripts/init-settings.sh # 修改默认 IP 等脚本
+    UPLOAD_RELEASE: true # 编译完成后上传到 Release
+    TZ: Asia/Shanghai # 时区
 
 jobs:
     build:
-        runs-on: ubuntu-24.04 # 使用 Ubuntu 24.04 环境（最新，支持更快构建）
+        runs-on: ubuntu-24.04 # Use latest Ubuntu for compatibility with ImmortalWrt build tools
 
         steps:
-            - name: 检查 # 步骤：检出仓库代码
-              uses: actions/checkout@main
-
-            - name: 初始化环境 # 步骤：设置环境，清理空间，安装依赖
-              env:
-                  DEBIAN_FRONTEND: noninteractive # 非交互模式，避免 apt 提示
+            - name: Checkout repository
+              uses: actions/checkout@v4 # Checks out this repo to access custom configs and scripts
+            - name: Create Swap
               run: |
-                  # 运行清理磁盘脚本（如果存在）
-                  chmod +x $FREE_DISK_SH && $FREE_DISK_SH
-                  # 更新 apt 并升级系统
-                  sudo -E apt-get -qq update -y
-                  sudo -E apt-get -qq full-upgrade -y
-                  # 运行环境脚本（如果存在）
-                  chmod +x $ENV_SH && $ENV_SH
-                  # 清理不必要的目录以节省空间
-                  sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-                  sudo timedatectl set-timezone "$TZ"
-                  # 清理 Docker 镜像和容器
-                  docker image prune -a -f
-                  docker container prune -f
-                  # 创建工作目录
-                  sudo mkdir -p /workdir
-                  sudo chown $USER:$GROUPS /workdir
-
-            - name: 检查空间使用情况1 # 步骤：显示磁盘使用（调试用）
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 克隆源码 # 步骤：克隆 ImmortalWrt 源码
-              working-directory: /workdir
+                  sudo fallocate -l 8G /swapfile
+                  sudo chmod 600 /swapfile
+                  sudo mkswap /swapfile
+                  sudo swapon /swapfile
+            - name: Install build dependencies
               run: |
-                  # 克隆指定分支的源码（--depth 1 只克隆最新提交，节省时间）
-                  git clone $REPO_URL --depth 1 -b $REPO_BRANCH openwrt
-                  # 创建符号链接到 GitHub 工作区
-                  ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+                  # Update package list and install required tools for OpenWrt/ImmortalWrt compilation.
+                  # These are standard dependencies for building from source.
+                  sudo apt update -y
+                  sudo apt full-upgrade -y
+                  sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+                    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext-base gettext \
+                    git gperf haveged help2man intltool libc-dev libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+                    libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+                    libssl-dev libtool lrzsz mkisofs msmtp ninja-build patch pkgconf python3 python3-pyelftools \
+                    python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglify-js \
+                    upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+                  sudo apt autoremove --purge -y
+                  sudo apt clean -y
 
-            - name: 设置 VERSION 环境变量 # 步骤：提取版本号
-              run: echo "VERSION=${REPO_BRANCH#*-}" >> $GITHUB_ENV
-
-            - name: 开启缓存 # 步骤：启用缓存，加速后续构建（ccache 等）
-              uses: klever1988/cachewrtbuild@main
-              with:
-                  ccache: "true" # 启用 ccache 缓存
-                  mixkey: "${{ env.VERSION }}-ax6000" # 缓存键：版本 + 设备
-                  prefix: ${{ github.workspace }}/openwrt # 缓存路径
-
-            - name: 安装 feeds # 步骤：更新和安装 feeds（软件源）
+            - name: Clone ImmortalWrt source code
               run: |
+                  # Clone the ImmortalWrt repository at version 24.10.4 (latest stable as of Dec 2025).
+                  # This ensures the build is on version 24+ as required.
+                  git clone https://github.com/immortalwrt/immortalwrt.git -b v24.10.4 openwrt
                   cd openwrt
-                  ./scripts/feeds update -a  # 更新所有 feeds
-                  ./scripts/feeds install -a  # 安装所有 feeds
+                  git rev-parse HEAD  # Log commit hash for reproducibility
 
-            - name: 导入补丁和配置 & 执行脚本 # 步骤：应用配置和脚本
+            - name: Update and install feeds
+              working-directory: openwrt
               run: |
-                  # 如果有 files 目录，复制到 openwrt（自定义文件，如 rootfs）
-                  [ -d files ] && mv files openwrt/files || echo "files not found"
-                  # 追加设备配置（ax6000.config）
-                  [ -f $PLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
-                  # 追加包配置（packages.config）
-                  [ -f $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
-                  cd openwrt
-                  # 运行自定义设置脚本（如果存在）
-                  chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
-                  # 运行包脚本（如果存在）
-                  chmod +x $GITHUB_WORKSPACE/$PACKAGES_SH && $GITHUB_WORKSPACE/$PACKAGES_SH
-                  # 运行 Clash 核心脚本（如果存在）
-                  chmod +x $GITHUB_WORKSPACE/$CLASH_CORE_SH && $GITHUB_WORKSPACE/$CLASH_CORE_SH
+                  # Update package feeds and install them. This pulls in all necessary packages, including those for PPPoE.
+                  ./scripts/feeds update -a
+                  ./scripts/feeds install -a
 
-            - name: 下载文件 # 步骤：生成 defconfig 并下载依赖
+            - name: Apply configuration
+              working-directory: openwrt
               run: |
-                  cd openwrt
-                  make defconfig  # 扩展 .config
-                  make download -j8 V=10  # 下载包源（-j8 多线程）
-                  # 清理小文件（小于 1KB 的下载失败文件）
-                  find dl -size -1024c -exec ls -l {} \;
+                  # Copy base config (common settings for all builds).
+                  cp ../common/base.config .config
+                  # Append device-specific config for AX6000 (target selection, kernel tweaks).
+                  cat ../common/config/ax6000/ax6000.config >> .config
+                  # Append package-specific config for AX6000 (necessary and recommended plugins).
+                  cat ../common/config/ax6000/packages-ax6000.config >> .config
+                  # Expand the config to full defconfig for building.
+                  make defconfig
+
+            - name: Download dependencies
+              working-directory: openwrt
+              run: |
+                  # Download all source packages in parallel for faster build.
+                  make download -j$(nproc)
+                  # Clean up any failed downloads.
                   find dl -size -1024c -exec rm -f {} \;
 
-            - name: 空间使用情况2 # 调试：磁盘使用
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 编译工具链 # 步骤：编译工具链
-              id: mtools
+            - name: Compile firmware
+              working-directory: openwrt
               run: |
-                  cd openwrt
-                  make defconfig
-                  echo -e "$(($(nproc)+1)) thread compile"  # 使用 CPU 核数 +1 线程
-                  make tools/compile -j$(($(nproc)+1)) || make tools/compile -j1 V=s  # 先多线程，失败则单线程
-                  make toolchain/compile -j$(($(nproc)+1)) || make toolchain/compile -j1 V=s
-                  echo "status=success" >> $GITHUB_OUTPUT
+                  # Build the firmware with verbose output for debugging.
+                  # Uses all CPU cores for speed.
+                  make -j$(nproc) V=s
 
-            - name: 空间使用情况3_1 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 清除工具链编译中间产物... # 步骤：清理空间
-              if: steps.mtools.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt
-                  rm -rf dl/*  # 清理下载
-                  rm -rf build_dir/toolchain-*  # 清理工具链中间文件
-
-            - name: 空间使用情况3_2 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 编译内核 # 步骤：编译内核
-              id: mkernel
-              if: steps.mtools.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt
-                  echo -e "$(($(nproc)+1)) thread compile"
-                  make target/linux/compile -j$(($(nproc)+1)) || make target/linux/compile -j1 V=s
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 空间使用情况4 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 编译插件 # 步骤：编译包
-              id: mpackage
-              if: steps.mkernel.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt
-                  echo -e "$(($(nproc)+1)) thread compile"
-                  make package/compile -j$(($(nproc)+1)) || make package/compile -j1 V=s
-                  make package/install -j$(nproc) || make package/install -j1 V=s
-                  make package/index  # 生成包索引
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 空间使用情况5 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 清除插件编译文件 # 步骤：清理包中间文件
-              id: cpackage
-              if: steps.mpackage.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt
-                  rm -rf build_dir/target-*/host  # 清理主机工具
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 空间使用情况6 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 编译固件 # 步骤：编译最终固件
-              id: compile
-              if: steps.cpackage.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt
-                  echo -e "$(($(nproc)+1)) thread compile"
-                  make target/install -j$(nproc) || make target/install -j1 V=s
-                  make json_overview_image_info  # 生成镜像信息
-                  make checksum  # 生成校验和
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 空间使用情况7 # 调试
-              if: (!cancelled())
-              run: df -hT
-
-            - name: 上传 bin 目录 # 步骤：上传 artifact（如果启用）
-              uses: actions/upload-artifact@main
-              if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v4
               with:
-                  name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-                  path: openwrt/bin
-
-            - name: 整理文件 # 步骤：清理输出目录，只保留固件
-              id: organize
-              if: steps.compile.outputs.status == 'success' && !cancelled()
-              run: |
-                  cd openwrt/bin/targets/*/*
-                  # 移除不必要的文件
-                  rm -rf *.buildinfo
-                  rm -rf *.json
-                  rm -rf *.manifest
-                  rm -rf packages
-                  echo "FIRMWARE=$PWD" >> $GITHUB_ENV  # 设置固件路径环境变量
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 上传固件目录 # 步骤：上传 artifact（如果启用）
-              uses: actions/upload-artifact@main
-              if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
-              with:
-                  name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-                  path: ${{ env.FIRMWARE }}
-
-            - name: 生成发布标签 # 步骤：创建 Release 标签和描述
-              id: tag
-              if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
-              run: |
-                  VERSION1="${REPO_BRANCH#*-}"  # 提取版本
-                  # 创建 Release 描述文本
-                  echo -e "🎉 Redmi AX6000-ubootmod 固件\n✅ ImmortalWrt ${VERSION1} 源码\n❗️ 默认 IP: 192.168.6.1\n❗️ 包含不死 U-Boot 支持" >> release.txt
-                  # 生成标签：日期 + 版本
-                  echo "release_tag=$(date +"%Y.%m.%d-${VERSION1}_ax6000")" >> $GITHUB_OUTPUT
-                  echo "status=success" >> $GITHUB_OUTPUT
-
-            - name: 上传固件到发布 # 步骤：上传固件到 GitHub Release
-              uses: softprops/action-gh-release@v2.0.4
-              if: steps.tag.outputs.status == 'success' && !cancelled()
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GitHub 令牌
-              with:
-                  tag_name: ${{ steps.tag.outputs.release_tag }} # 标签名
-                  body_path: release.txt # 描述文件
-                  files: ${{ env.FIRMWARE }}/* # 上传所有固件文件（.itb, .ubi 等）
-
-            - name: 删除以前发布的固件 # 步骤：清理旧 Release（保留最近 15 个）
-              uses: dev-drprasad/delete-older-releases@v0.3.3
-              if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
-              with:
-                  keep_latest: 15 # 保留最近 15 个 Release
-                  delete_tags: true # 删除标签
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: 删除以前的工作流程 # 步骤：清理旧 Actions 运行记录（保留最近 3 个，1 天内）
-              uses: Mattraks/delete-workflow-runs@v2
-              with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
-                  repository: ${{ github.repository }}
-                  retain_days: 1 # 保留 1 天
-                  keep_minimum_runs: 3 # 至少保留 3 个
+                  name: immortalwrt-ax6000-firmware
+                  path: openwrt/bin/targets/mediatek/filogic/*
+                  retention-days: 7 # Keep artifacts for 7 days
