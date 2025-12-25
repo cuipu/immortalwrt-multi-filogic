@@ -40,13 +40,13 @@ jobs:
                   sudo swapon /swapfile
                   sudo swapon --show
 
-            - name: 安装编译依赖 # 安装 ImmortalWrt 编译所需的最小依赖集（精简后安装更快）
+            - name: 安装编译依赖
               run: |
                   sudo apt update -y
                   sudo apt install -y build-essential ccache ecj fastjar flex gawk gettext git java-propose-classpath \
-                    libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-pyelftools \
-                    rsync subversion swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
-
+                  libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-pyelftools \
+                  rsync subversion swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
+                  # 删除 uglify-js 这项
             - name: 克隆源码 # 克隆指定的 padavanonly mt798x 优化仓库与分支
               run: |
                   git clone ${{ env.REPO_URL }} -b ${{ env.REPO_BRANCH }} openwrt
