@@ -40,13 +40,13 @@ jobs:
                   sudo swapon /swapfile
                   sudo swapon --show
 
-            - name: 安装编译依赖
+            - name: 安装编译依赖（精简版，专治 ubuntu-24.04）
               run: |
                   sudo apt update -y
-                  sudo apt install -y build-essential ccache ecj fastjar flex gawk gettext git java-propose-classpath \
-                  libelf-dev libncurses5-dev libncursesw5-dev libssl-dev python3 python3-distutils python3-pyelftools \
-                  rsync subversion swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
-                  # 删除 uglify-js 这项
+                  sudo apt install -y build-essential ccache flex gawk gettext git libncurses5-dev \
+                  libssl-dev python3 python3-pyelftools python3-setuptools rsync subversion \
+                  swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
+
             - name: 克隆源码 # 克隆指定的 padavanonly mt798x 优化仓库与分支
               run: |
                   git clone ${{ env.REPO_URL }} -b ${{ env.REPO_BRANCH }} openwrt
