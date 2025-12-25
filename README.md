@@ -28,4 +28,4 @@ scripts/init-settings.sh 包含了固件首次启动后的默认网络配置和�
   - 账号为 root
   - 密码为空
 ## 默认集成插件
-默认集成 LuCI 中文、Passwall、OpenClash、TTYD 等插件 编译完成自动发布到 Releases，方便下载刷机 欢迎 fork 自定义自己的插件和设备
+默认集成 LuCI 中文、Passwall、OpenClash、TTYD 等插件 编译完成自动发布到 Releases，方便下载刷机 欢迎 fork 自定义自己的插件和设备，目前没有跑通，正在测试
