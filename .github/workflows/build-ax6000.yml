@@ -83,12 +83,35 @@ jobs:
             - name: 编译固件 # 核心编译步骤（使用 env 中定义的线程数，1 最稳）
               working-directory: openwrt
               run: |
-                  make -j1 V=s # 使用单线程编译，避免 OOM 或编译失败
-            #                  make -j${{ env.COMPILE_THREADS }} V=s || make -j1 V=s  # 如果多线程失败自动降为单线程
-            - name: 上传编译产物到 Artifacts # 编译成功后上传固件，方便下载
-              if: ${{ env.UPLOAD_ARTIFACT == 'true' }}
-              uses: actions/upload-artifact@v4
+                  # make -j1 V=s # 使用单线程编译，避免 OOM 或编译失败
+                  make -j${{ env.COMPILE_THREADS }} V=s || make -j1 V=s  # 如果多线程失败自动降为单线程
+
+            - name: 获取构建日期时间
+              id: date
+              run: echo "date=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+
+            - name: 提取仓库信息
+              id: repo_info
+              run: |
+                  repo_full=$(basename ${{ env.REPO_URL }})
+                  echo "repo_name=$repo_full" >> $GITHUB_OUTPUT
+            - name: 创建并上传到 GitHub Release
+              uses: softprops/action-gh-release@v2
               with:
-                  name: ImmortalWrt-Redmi-AX6000-Firmware
-                  path: openwrt/bin/targets/mediatek/filogic/*
-                  retention-days: 10 # Artifacts 保留 10 天
+                  tag_name: "${{ steps.repo_info.outputs.repo_name }}-${{ env.REPO_BRANCH }}-ax6000-${{ steps.date.outputs.date }}"
+                  name: "Redmi AX6000 ImmortalWrt 自动构建 ${{ steps.date.outputs.date }}"
+                  body: |
+                      - 仓库：${{ env.REPO_URL }}
+                      - 分支：${{ env.REPO_BRANCH }}
+                      - 型号：Redmi AX6000 (ubootmod)
+                      - 内核：6.6 (padavanonly mt798x 优化)
+                      - 包含：PPPoE、TurboACC-mtk、Argon 主题等
+                      - 构建时间：${{ steps.date.outputs.date }}
+                      - 构建 ID：${{ github.run_id }}
+                      - 构建触发者：${{ github.actor }}
+                      - 仓库 SHA：${{ github.sha }}
+                  files: |
+                      openwrt/bin/targets/mediatek/filogic/*.bin
+                      openwrt/bin/targets/mediatek/filogic/*.img
+                  draft: false
+                  prerelease: false
