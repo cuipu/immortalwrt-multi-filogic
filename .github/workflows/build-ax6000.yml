@@ -1,11 +1,11 @@
-name: Build ALL
+name: Build ImmortalWrt for Redmi AX6000
 
 permissions: write-all # 允许上传 Release 和删除旧版本
 
 on:
     workflow_dispatch: # 手动触发
     schedule:
-        - cron: "0 20 * * 3" # 每周四 04:00 北京时间自动构建（可删）
+        - cron: "0 20 * * 3" # 每周四 北京时间 04:00 自动构建（可删）
 
 env:
     TZ: Asia/Shanghai
@@ -13,7 +13,7 @@ env:
     REPO_BRANCH: openwrt-24.10-6.6
     DEVICE_CONFIG: configs/ax6000/ax6000.config
     PACKAGES_CONFIG: configs/ax6000/packages-ax6000.config
-    INIT_SETTINGS: scripts/init-settings.sh # 如果有改默认IP等脚本
+    INIT_SETTINGS: scripts/init-settings.sh # 如果有改默认IP等脚本，可删
     UPLOAD_RELEASE: true
     KEEP_LATEST_RELEASES: 15 # 保留最近15个 Release
     KEEP_MINIMUM_RUNS: 3 # 保留最近3次 workflow 运行记录
@@ -26,27 +26,24 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
 
-            - name: 最大化清理磁盘空间（治本）
+            - name: 超级清理磁盘空间（释放10GB+，治空间不足）
               run: |
-                  # 删除所有大缓存目录
-                   sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-                   sudo rm -rf /usr/local/.ghcup /usr/local/share/boost
-                   # 清理 Docker（占几GB）
-                   sudo docker image prune -af || true
-                   sudo docker system prune -af || true
-                   # 清理 runner 临时缓存
-                   sudo rm -rf /home/runner/actions-runner/_diag || true
-                   df -hT  # 查看清理后空间（应剩10GB+）
+                  sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+                  sudo rm -rf /usr/local/.ghcup /usr/local/share/boost /opt/containerd
+                  sudo docker image prune -af || true
+                  sudo docker system prune -af --volumes || true
+                  sudo rm -rf /home/runner/actions-runner/_diag || true
+                  df -hT
 
-            - name: 创建 32GB Swap（防 OOM）
+            - name: 创建 64GB Swap（彻底防 OOM）
               run: |
-                  sudo fallocate -l 32G /swapfile
+                  sudo fallocate -l 64G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
                   sudo swapon --show
 
-            - name: 安装依赖
+            - name: 安装编译依赖
               run: |
                   sudo apt update -y
                   sudo apt install -y build-essential ccache flex gawk gettext git libncurses5-dev \
@@ -57,7 +54,7 @@ jobs:
               run: |
                   git clone ${{ env.REPO_URL }} -b ${{ env.REPO_BRANCH }} openwrt
                   cd openwrt
-                  git rev-parse HEAD
+                  echo "源码 Commit: $(git rev-parse HEAD)"
 
             - name: 开启 ccache 缓存（加速重复编译）
               uses: klever1988/cachewrtbuild@main
@@ -88,10 +85,10 @@ jobs:
                   make download -j1
                   find dl -size -1024c -exec rm -f {} \;
 
-            - name: 空间检查1
+            - name: 空间检查（下载后）
               run: df -hT
 
-            # ========= 分步编译 =========
+            # ========= 分步编译 + 每步清理 =========
             - name: 编译工具链
               id: tools
               working-directory: openwrt
@@ -101,7 +98,7 @@ jobs:
                   echo "status=success" >> $GITHUB_OUTPUT
 
             - name: 清理工具链中间产物
-              if: steps.tools.outputs.status == 'success'
+              if: always()
               working-directory: openwrt
               run: |
                   rm -rf build_dir/toolchain-* staging_dir/toolchain-*
@@ -126,10 +123,10 @@ jobs:
                   echo "status=success" >> $GITHUB_OUTPUT
 
             - name: 清理插件中间产物
-              if: steps.package.outputs.status == 'success'
+              if: always()
               working-directory: openwrt
               run: |
-                  rm -rf build_dir/target-*/packages
+                  rm -rf build_dir/target-*/packages tmp
                   df -hT
 
             - name: 编译固件
@@ -141,7 +138,7 @@ jobs:
                   make checksum
                   echo "status=success" >> $GITHUB_OUTPUT
 
-            - name: 空间检查最终
+            - name: 空间检查（最终）
               run: df -hT
 
             # ========= 上传 Artifacts =========

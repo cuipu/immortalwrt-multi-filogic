@@ -1,133 +1,199 @@
-name: Build ImmortalWrt for Redmi AX6000 # 工作流名称
+name: Build ALL
 
-# 触发方式
+permissions: write-all # 允许上传 Release 和删除旧版本
+
 on:
-    workflow_dispatch: # 支持 GitHub 页面手动点击运行
-    repository_dispatch: # 支持外部仓库通过 API 触发（可选）
+    workflow_dispatch: # 手动触发
     schedule:
-        - cron: "0 20 * * 3" # 每周四 北京时间 04:00 自动构建（可删除或修改）
+        - cron: "0 20 * * 3" # 每周四 04:00 北京时间自动构建（可删）
 
-# 全局环境变量（方便统一管理与修改）
 env:
-    TZ: Asia/Shanghai # 时区设置为中国上海，避免日志时间错乱
-    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6 # 源码仓库（padavanonly 维护的 mt798x 专用分支，内核 6.6，AX6000 性能最佳）
-    REPO_BRANCH: openwrt-24.10-6.6 # 源码分支（基于 ImmortalWrt 24.10 的 6.6 内核优化版）
-    CONFIG_DEVICE: configs/ax6000/ax6000.config # 设备目标配置文件路径（选择 mediatek/filogic + Redmi AX6000）
-    CONFIG_PACKAGES: configs/ax6000/packages-ax6000.config # 插件包配置文件路径（LuCI 插件、PPPoE 等）
-    INIT_SETTINGS_SCRIPT: scripts/init-settings.sh # 可选：修改默认 IP、密码、主机名等脚本路径（如果有的话）
-    UPLOAD_ARTIFACT: true # 是否上传编译产物到 Artifacts（true/false）
-    COMPILE_THREADS: 1 # 编译线程数（GitHub runner 内存有限，强烈建议先用 1，成功后再改为 4）
+    TZ: Asia/Shanghai
+    REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-6.6
+    REPO_BRANCH: openwrt-24.10-6.6
+    DEVICE_CONFIG: configs/ax6000/ax6000.config
+    PACKAGES_CONFIG: configs/ax6000/packages-ax6000.config
+    INIT_SETTINGS: scripts/init-settings.sh # 如果有改默认IP等脚本
+    UPLOAD_RELEASE: true
+    KEEP_LATEST_RELEASES: 15 # 保留最近15个 Release
+    KEEP_MINIMUM_RUNS: 3 # 保留最近3次 workflow 运行记录
 
 jobs:
     build:
-        runs-on: ubuntu-24.04 # 使用最新的 Ubuntu 系统，确保工具链兼容性
+        runs-on: ubuntu-24.04
 
         steps:
-            - name: Checkout repository # 检出本仓库代码（获取 configs、scripts 等自定义文件）
+            - name: Checkout repository
               uses: actions/checkout@v4
 
-            - name: 清理磁盘空间（释放更多空间防止空间不足） # GitHub runner 默认磁盘较小，先清理无用内容
+            - name: 最大化清理磁盘空间（治本）
               run: |
-                  sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-                  sudo docker image prune -af || true
-                  df -h
+                  # 删除所有大缓存目录
+                   sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+                   sudo rm -rf /usr/local/.ghcup /usr/local/share/boost
+                   # 清理 Docker（占几GB）
+                   sudo docker image prune -af || true
+                   sudo docker system prune -af || true
+                   # 清理 runner 临时缓存
+                   sudo rm -rf /home/runner/actions-runner/_diag || true
+                   df -hT  # 查看清理后空间（应剩10GB+）
 
-            - name: 创建 8GB Swap（防止 OOM 内存溢出） # 编译 OpenWrt 极易 OOM，添加 Swap 基本能彻底解决
+            - name: 创建 32GB Swap（防 OOM）
               run: |
-                  sudo fallocate -l 24G /swapfile
+                  sudo fallocate -l 32G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
                   sudo swapon --show
 
-            - name: 安装编译依赖（精简版，专治 ubuntu-24.04）
+            - name: 安装依赖
               run: |
                   sudo apt update -y
                   sudo apt install -y build-essential ccache flex gawk gettext git libncurses5-dev \
-                  libssl-dev python3 python3-pyelftools python3-setuptools rsync subversion \
-                  swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
-            - name: 检查空间使用情况1
-              if: (!cancelled())
-              run: df -hT
-            - name: 克隆源码 # 克隆指定的 padavanonly mt798x 优化仓库与分支
+                    libssl-dev python3 python3-pyelftools python3-setuptools rsync subversion \
+                    swig texinfo unzip upx-ucl wget zlib1g-dev xsltproc
+
+            - name: 克隆源码
               run: |
                   git clone ${{ env.REPO_URL }} -b ${{ env.REPO_BRANCH }} openwrt
                   cd openwrt
-                  echo "当前源码 Commit ID:"
                   git rev-parse HEAD
 
-            - name: 更新并安装 Feeds # 更新所有软件源并安装包索引
+            - name: 开启 ccache 缓存（加速重复编译）
+              uses: klever1988/cachewrtbuild@main
+              with:
+                  ccache: "true"
+                  mixkey: "ax6000-24.10-6.6"
+                  prefix: ${{ github.workspace }}/openwrt
+
+            - name: 更新并安装 feeds
               working-directory: openwrt
               run: |
                   ./scripts/feeds update -a
                   ./scripts/feeds install -a
 
-            - name: 加载自定义配置 # 合并设备配置 + 插件配置
+            - name: 加载配置 & 执行自定义脚本
               working-directory: openwrt
               run: |
-                  # 先写入设备目标配置（覆盖式，确保 target 正确）
-                  cat ../${{ env.CONFIG_DEVICE }} > .config
-                  # 追加插件包配置
-                  cat ../${{ env.CONFIG_PACKAGES }} >> .config
-                  # 如果有 init-settings.sh（常用于改默认 IP 为 192.168.10.1 等），执行它
-                  if [ -f ../${{ env.INIT_SETTINGS_SCRIPT }} ]; then
-                    bash ../${{ env.INIT_SETTINGS_SCRIPT }}
+                  cat ../${{ env.DEVICE_CONFIG }} > .config
+                  cat ../${{ env.PACKAGES_CONFIG }} >> .config
+                  if [ -f ../${{ env.INIT_SETTINGS }} ]; then
+                    bash ../${{ env.INIT_SETTINGS }}
                   fi
-                  # 展开配置
                   make defconfig
 
-            - name: 下载源码包 # 并行下载所有包的源码
+            - name: 下载源码（单线程防峰值）
               working-directory: openwrt
               run: |
-                  make download -j$(nproc)
+                  make download -j1
                   find dl -size -1024c -exec rm -f {} \;
-            - name: 检查空间使用情况2
-              if: (!cancelled())
-              run: df -hT
-            - name: 编译固件 # 核心编译步骤（使用 env 中定义的线程数，1 最稳）
-              working-directory: openwrt
-              run: |
-                  # make -j1 V=s # 使用单线程编译，避免 OOM 或编译失败
-                  make -j${{ env.COMPILE_THREADS }} V=s || make -j1 V=s  # 如果多线程失败自动降为单线程
-            - name: 清理编译中间产物（释放空间）
-              if: always() # 无论成功失败都执行
-              working-directory: openwrt
-              run: |
-                  # 删除大头中间目录（安全，不会删源码）
-                  rm -rf build_dir staging_dir tmp
-                  # 可选：清理 dl 下载缓存（下次会重下，但省空间）
-                  # rm -rf dl
-                  # 显示清理后空间
-                  df -h
-            - name: 检查空间使用情况3
-              if: (!cancelled())
-              run: df -hT
-            - name: 获取构建日期时间
-              id: date
-              run: echo "date=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
-            - name: 提取仓库信息
-              id: repo_info
+            - name: 空间检查1
+              run: df -hT
+
+            # ========= 分步编译 =========
+            - name: 编译工具链
+              id: tools
+              working-directory: openwrt
               run: |
-                  repo_full=$(basename ${{ env.REPO_URL }})
-                  echo "repo_name=$repo_full" >> $GITHUB_OUTPUT
-            - name: 创建并上传到 GitHub Release
+                  make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+                  make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 清理工具链中间产物
+              if: steps.tools.outputs.status == 'success'
+              working-directory: openwrt
+              run: |
+                  rm -rf build_dir/toolchain-* staging_dir/toolchain-*
+                  df -hT
+
+            - name: 编译内核
+              id: kernel
+              if: steps.tools.outputs.status == 'success'
+              working-directory: openwrt
+              run: |
+                  make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 编译插件包
+              id: package
+              if: steps.kernel.outputs.status == 'success'
+              working-directory: openwrt
+              run: |
+                  make package/compile -j$(nproc) || make package/compile -j1 V=s
+                  make package/install -j$(nproc) || make package/install -j1 V=s
+                  make package/index
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 清理插件中间产物
+              if: steps.package.outputs.status == 'success'
+              working-directory: openwrt
+              run: |
+                  rm -rf build_dir/target-*/packages
+                  df -hT
+
+            - name: 编译固件
+              id: firmware
+              if: steps.package.outputs.status == 'success'
+              working-directory: openwrt
+              run: |
+                  make target/install -j$(nproc) || make target/install -j1 V=s
+                  make checksum
+                  echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 空间检查最终
+              run: df -hT
+
+            # ========= 上传 Artifacts =========
+            - name: 上传固件到 Artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ImmortalWrt-AX6000-${{ github.run_id }}
+                  path: openwrt/bin/targets/mediatek/filogic/*
+
+            # ========= 创建 Release =========
+            - name: 生成 Release 信息
+              id: release_info
+              if: env.UPLOAD_RELEASE == 'true' && steps.firmware.outputs.status == 'success'
+              run: |
+                  DATE=$(date +'%Y%m%d-%H%M')
+                  echo "tag=ax6000-$DATE" >> $GITHUB_OUTPUT
+                  echo "name=Redmi AX6000 ImmortalWrt 自动构建 $DATE" >> $GITHUB_OUTPUT
+                  cat > release_body.txt << EOF
+                  - 仓库：${{ env.REPO_URL }}
+                  - 分支：${{ env.REPO_BRANCH }}
+                  - 型号：Redmi AX6000 (ubootmod)
+                  - 内核：6.6 (padavanonly mt798x 优化)
+                  - 包含：PPPoE、TurboACC-mtk、Argon 主题等
+                  - 构建时间：$DATE
+                  - 触发者：${{ github.actor }}
+                  EOF
+
+            - name: 上传到 GitHub Release
+              if: env.UPLOAD_RELEASE == 'true' && steps.release_info.outputs.tag
               uses: softprops/action-gh-release@v2
               with:
-                  tag_name: "${{ steps.repo_info.outputs.repo_name }}-${{ env.REPO_BRANCH }}-ax6000-${{ steps.date.outputs.date }}"
-                  name: "Redmi AX6000 ImmortalWrt 自动构建 ${{ steps.date.outputs.date }}"
-                  body: |
-                      - 仓库：${{ env.REPO_URL }}
-                      - 分支：${{ env.REPO_BRANCH }}
-                      - 型号：Redmi AX6000 (ubootmod)
-                      - 内核：6.6 (padavanonly mt798x 优化)
-                      - 包含：PPPoE、TurboACC-mtk、Argon 主题等
-                      - 构建时间：${{ steps.date.outputs.date }}
-                      - 构建 ID：${{ github.run_id }}
-                      - 构建触发者：${{ github.actor }}
-                      - 仓库 SHA：${{ github.sha }}
-                  files: |
-                      openwrt/bin/targets/mediatek/filogic/*.bin
-                      openwrt/bin/targets/mediatek/filogic/*.img
+                  tag_name: ${{ steps.release_info.outputs.tag }}
+                  name: ${{ steps.release_info.outputs.name }}
+                  body_path: release_body.txt
+                  files: openwrt/bin/targets/mediatek/filogic/*
                   draft: false
                   prerelease: false
+
+            # ========= 清理旧 Release 和 Workflow =========
+            - name: 删除旧 Release（保留最近15个）
+              if: env.UPLOAD_RELEASE == 'true' && steps.firmware.outputs.status == 'success'
+              uses: dev-drprasad/delete-older-releases@v0.3.3
+              with:
+                  keep_latest: ${{ env.KEEP_LATEST_RELEASES }}
+                  delete_tags: true
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: 删除旧 Workflow 运行记录（保留最近3次）
+              uses: Mattraks/delete-workflow-runs@v2
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+                  repository: ${{ github.repository }}
+                  retain_days: 1
+                  keep_minimum_runs: ${{ env.KEEP_MINIMUM_RUNS }}
