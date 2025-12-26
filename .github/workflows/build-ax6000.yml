@@ -25,7 +25,19 @@ jobs:
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
-
+            - name: 最大化释放磁盘空间（推荐action）
+              uses: jlumbroso/free-disk-space@main
+              with:
+                  tool-cache: false
+                  large-packages: true
+                  docker-images: true
+                  swap-storage: true
+            - name: 手动额外清理
+              run: |
+                  sudo rm -rf /opt/hostedtoolcache /usr/local/.ghcup /usr/local/share/boost
+                  sudo docker system prune -af --volumes || true
+                  sudo rm -rf /home/runner/actions-runner/_diag || true
+                  df -hT
             - name: 超级清理磁盘空间（释放10GB+，治空间不足）
               run: |
                   sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
@@ -35,9 +47,9 @@ jobs:
                   sudo rm -rf /home/runner/actions-runner/_diag || true
                   df -hT
 
-            - name: 创建 64GB Swap（彻底防 OOM）
+            - name: 创建 32GB Swap（彻底防 OOM）
               run: |
-                  sudo fallocate -l 64G /swapfile
+                  sudo fallocate -l 32G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
