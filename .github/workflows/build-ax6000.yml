@@ -47,9 +47,9 @@ jobs:
                   sudo rm -rf /home/runner/actions-runner/_diag || true
                   df -hT
 
-            - name: 创建 32GB Swap（彻底防 OOM）
+            - name: 创建 16GB Swap（彻底防 OOM）
               run: |
-                  sudo fallocate -l 32G /swapfile
+                  sudo fallocate -l 16G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
