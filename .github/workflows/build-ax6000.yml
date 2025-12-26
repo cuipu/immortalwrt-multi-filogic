@@ -1,4 +1,4 @@
-name: Build ImmortalWrt for Redmi AX6000
+name: Build ALL
 
 permissions: write-all # 允许上传 Release 和删除旧版本
 
@@ -38,9 +38,9 @@ jobs:
                    sudo rm -rf /home/runner/actions-runner/_diag || true
                    df -hT  # 查看清理后空间（应剩10GB+）
 
-            - name: 创建 24GB Swap（防 OOM）
+            - name: 创建 32GB Swap（防 OOM）
               run: |
-                  sudo fallocate -l 24G /swapfile
+                  sudo fallocate -l 32G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
