@@ -26,16 +26,21 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v4
 
-            - name: 彻底清理磁盘空间（防止空间不足）
+            - name: 最大化清理磁盘空间（治本）
               run: |
-                  sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-                  sudo docker image prune -af || true
-                  sudo rm -rf /usr/local/.ghcup || true
-                  df -hT
+                  # 删除所有大缓存目录
+                   sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+                   sudo rm -rf /usr/local/.ghcup /usr/local/share/boost
+                   # 清理 Docker（占几GB）
+                   sudo docker image prune -af || true
+                   sudo docker system prune -af || true
+                   # 清理 runner 临时缓存
+                   sudo rm -rf /home/runner/actions-runner/_diag || true
+                   df -hT  # 查看清理后空间（应剩10GB+）
 
-            - name: 创建 16GB Swap（防 OOM）
+            - name: 创建 24GB Swap（防 OOM）
               run: |
-                  sudo fallocate -l 16G /swapfile
+                  sudo fallocate -l 24G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
