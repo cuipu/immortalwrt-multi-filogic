@@ -34,7 +34,7 @@ jobs:
 
             - name: 创建 8GB Swap（防止 OOM 内存溢出） # 编译 OpenWrt 极易 OOM，添加 Swap 基本能彻底解决
               run: |
-                  sudo fallocate -l 16G /swapfile
+                  sudo fallocate -l 24G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
@@ -83,8 +83,8 @@ jobs:
             - name: 编译固件 # 核心编译步骤（使用 env 中定义的线程数，1 最稳）
               working-directory: openwrt
               run: |
-                  make -j${{ env.COMPILE_THREADS }} V=s || make -j1 V=s  # 如果多线程失败自动降为单线程
-
+                  make -j1 V=s # 使用单线程编译，避免 OOM 或编译失败
+            #                  make -j${{ env.COMPILE_THREADS }} V=s || make -j1 V=s  # 如果多线程失败自动降为单线程
             - name: 上传编译产物到 Artifacts # 编译成功后上传固件，方便下载
               if: ${{ env.UPLOAD_ARTIFACT == 'true' }}
               uses: actions/upload-artifact@v4
