@@ -34,7 +34,7 @@ jobs:
 
             - name: 创建 8GB Swap（防止 OOM 内存溢出） # 编译 OpenWrt 极易 OOM，添加 Swap 基本能彻底解决
               run: |
-                  sudo fallocate -l 8G /swapfile
+                  sudo fallocate -l 16G /swapfile
                   sudo chmod 600 /swapfile
                   sudo mkswap /swapfile
                   sudo swapon /swapfile
