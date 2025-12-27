@@ -25,6 +25,7 @@ jobs:
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
+
             - name: 最大化释放磁盘空间（推荐action）
               uses: jlumbroso/free-disk-space@main
               with:
@@ -32,13 +33,15 @@ jobs:
                   large-packages: true
                   docker-images: true
                   swap-storage: true
+
             - name: 手动额外清理
               run: |
                   sudo rm -rf /opt/hostedtoolcache /usr/local/.ghcup /usr/local/share/boost
                   sudo docker system prune -af --volumes || true
                   sudo rm -rf /home/runner/actions-runner/_diag || true
                   df -hT
-            - name: 超级清理磁盘空间（释放10GB+，治空间不足）
+
+            - name: 超级清理磁盘空间（释放10GB+）
               run: |
                   sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
                   sudo rm -rf /usr/local/.ghcup /usr/local/share/boost /opt/containerd
@@ -81,16 +84,16 @@ jobs:
                   ./scripts/feeds update -a
                   ./scripts/feeds install -a
 
-            - name: 加载配置 & 执行自定义脚本
+            - name: 加载配置 & 处理内核新选项
               working-directory: openwrt
               run: |
                   cat ../${{ env.DEVICE_CONFIG }} > .config
                   cat ../${{ env.PACKAGES_CONFIG }} >> .config
                   if [ -f ../${{ env.INIT_SETTINGS }} ]; then
-                  bash ../${{ env.INIT_SETTINGS }}
+                    bash ../${{ env.INIT_SETTINGS }}
                   fi
                   make defconfig
-                  yes "" | make kernel_oldconfig || true   # 关键：自动接受默认值处理所有新内核选项
+                  yes "" | make kernel_oldconfig || true   # 防止新内核选项导致 syncconfig 失败
 
             - name: 下载源码（单线程防峰值）
               working-directory: openwrt
@@ -101,7 +104,7 @@ jobs:
             - name: 空间检查（下载后）
               run: df -hT
 
-            # ========= 分步编译 + 每步清理 =========
+            # ========= 分步编译 =========
             - name: 编译工具链
               id: tools
               working-directory: openwrt
@@ -110,11 +113,11 @@ jobs:
                   make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
                   echo "status=success" >> $GITHUB_OUTPUT
 
-            - name: 清理工具链中间产物
+            - name: 清理工具链中间产物（仅删 build_dir，保留 staging_dir/toolchain）
               if: always()
               working-directory: openwrt
               run: |
-                  rm -rf build_dir/toolchain-* staging_dir/toolchain-*
+                  rm -rf build_dir/toolchain-*
                   df -hT
 
             - name: 编译内核
@@ -150,6 +153,13 @@ jobs:
                   make target/install -j$(nproc) || make target/install -j1 V=s
                   make checksum
                   echo "status=success" >> $GITHUB_OUTPUT
+
+            - name: 最终大清理（可选，进一步省空间）
+              if: always()
+              working-directory: openwrt
+              run: |
+                  rm -rf build_dir/ staging_dir/ tmp/
+                  df -hT
 
             - name: 空间检查（最终）
               run: df -hT
