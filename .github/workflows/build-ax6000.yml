@@ -128,13 +128,13 @@ jobs:
                   make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
                   echo "status=success" >> $GITHUB_OUTPUT
 
-            - name: 编译插件包
+            - name: 编译插件包（GMP 问题用单线程）
               id: package
               if: steps.kernel.outputs.status == 'success'
               working-directory: openwrt
               run: |
-                  make package/compile -j$(nproc) || make package/compile -j1 V=s
-                  make package/install -j$(nproc) || make package/install -j1 V=s
+                  make package/compile -j1 V=s || make package/compile -j1 V=s  # 强制单线程，避免 GMP bug
+                  make package/install -j1 V=s
                   make package/index
                   echo "status=success" >> $GITHUB_OUTPUT
 
