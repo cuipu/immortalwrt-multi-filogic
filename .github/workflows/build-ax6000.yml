@@ -87,9 +87,10 @@ jobs:
                   cat ../${{ env.DEVICE_CONFIG }} > .config
                   cat ../${{ env.PACKAGES_CONFIG }} >> .config
                   if [ -f ../${{ env.INIT_SETTINGS }} ]; then
-                    bash ../${{ env.INIT_SETTINGS }}
+                  bash ../${{ env.INIT_SETTINGS }}
                   fi
                   make defconfig
+                  yes "" | make kernel_oldconfig || true   # 关键：自动接受默认值处理所有新内核选项
 
             - name: 下载源码（单线程防峰值）
               working-directory: openwrt
