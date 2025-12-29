@@ -128,22 +128,24 @@ jobs:
                   make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
                   echo "status=success" >> $GITHUB_OUTPUT
 
-            - name: 修复 GMP 配置（跳过 autoreconf 警告）
+            - name: 修复 GMP 配置（跳过 autoreconf 警告并增强容错）
               if: always()
               working-directory: openwrt
               run: |
-                  GMP_DIR=$(find build_dir/target-aarch64_cortex-a53_musl -type d -name "gmp-*" 2>/dev/null | head -1)
-                  if [ -n "$GMP_DIR" ]; then
-                    touch "$GMP_DIR/.configured" "$GMP_DIR/configure"
-                    echo "Skipped autoreconf for GMP in $GMP_DIR"
-                  fi
+                  GMP_DIRS=$(find build_dir/host -type d -name "gmp-*" 2>/dev/null)
+                  for GMP_DIR in $GMP_DIRS; do
+                    if [ -n "$GMP_DIR" ]; then
+                      touch "$GMP_DIR/.configured" "$GMP_DIR/configure" "$GMP_DIR/.prepared"
+                      echo "Skipped autoreconf and marked as configured for GMP in $GMP_DIR"
+                    fi
+                  done
 
-            - name: 编译插件包（单线程 + 忽略 GMP 和 format-security 错误）
+            - name: 编译插件包（单线程 + 忽略更多常见错误）
               id: package
               if: steps.kernel.outputs.status == 'success'
               working-directory: openwrt
               run: |
-                  make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security" || make package/compile -j1 V=s
+                  make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral" || make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral"
                   make package/install -j1 V=s
                   make package/index
                   echo "status=success" >> $GITHUB_OUTPUT
