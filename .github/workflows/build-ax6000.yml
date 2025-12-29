@@ -93,18 +93,18 @@ jobs:
                     bash ../${{ env.INIT_SETTINGS }}
                   fi
                   make defconfig
-                  yes "" | make kernel_oldconfig || true
+                  yes "" | make oldconfig || true   # 改用 oldconfig，避免新内核选项交互中断
 
             - name: 下载源码
               working-directory: openwrt
               run: |
-                  make download -j1
+                  make download -j8   # 多线程下载更快，减少超时风险
                   find dl -size -1024c -exec rm -f {} \;
 
             - name: 空间检查（下载后）
               run: df -hT
 
-            # ========= 分步编译 =========
+            # ========= 分步编译（优化容错） =========
             - name: 编译工具链
               id: tools
               working-directory: openwrt
@@ -128,7 +128,7 @@ jobs:
                   make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
                   echo "status=success" >> $GITHUB_OUTPUT
 
-            - name: 修复 GMP 配置（跳过 autoreconf 警告并增强容错）
+            - name: 修复 GMP 配置（增强容错，针对常见 autoreconf 警告）
               if: always()
               working-directory: openwrt
               run: |
@@ -136,16 +136,17 @@ jobs:
                   for GMP_DIR in $GMP_DIRS; do
                     if [ -n "$GMP_DIR" ]; then
                       touch "$GMP_DIR/.configured" "$GMP_DIR/configure" "$GMP_DIR/.prepared"
-                      echo "Skipped autoreconf and marked as configured for GMP in $GMP_DIR"
+                      echo "Marked GMP as configured in $GMP_DIR"
                     fi
                   done
 
-            - name: 编译插件包（单线程 + 忽略更多常见错误）
+            - name: 编译插件包（单线程 + 忽略常见非致命错误）
               id: package
               if: steps.kernel.outputs.status == 'success'
               working-directory: openwrt
               run: |
-                  make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral" || make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral"
+                  make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral" || \
+                  make package/compile -j1 V=s IGNORE_ERRORS="m n gmp format-security nonliteral"
                   make package/install -j1 V=s
                   make package/index
                   echo "status=success" >> $GITHUB_OUTPUT
